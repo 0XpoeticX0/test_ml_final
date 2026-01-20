@@ -1,0 +1,156 @@
+import numpy as np
+import pandas as pd
+import pickle
+from scipy.stats import randint
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier, StackingClassifier
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, mean_squared_error, r2_score, mean_absolute_error
+from sklearn.linear_model import LogisticRegression
+import warnings
+warnings.filterwarnings('ignore')
+
+
+df = pd.read_csv('diabetes.csv')
+print("Shape:", df.shape)
+df.head()
+
+cols_to_fix = ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI']
+
+df[cols_to_fix] = df[cols_to_fix].replace(0, np.nan)
+df_temp = df.copy()
+
+
+corr_target = df_temp.corr()['Outcome'].sort_values(ascending=False)
+numeric_features_list = df_temp.drop('Outcome', axis=1).columns.tolist()
+num_transfrom = Pipeline(
+    steps = [
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ]
+)
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', num_transfrom, numeric_features_list)
+    ]
+)
+
+X = df_temp.drop('Outcome', axis=1)
+y = df_temp['Outcome']
+
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+c_rf = RandomForestClassifier(n_estimators=100, random_state=42)
+c_gb = GradientBoostingClassifier(n_estimators=100, random_state=42)
+
+voting_clf = VotingClassifier(
+    estimators=[
+        ('rf', c_rf),
+        ('gb', c_gb)
+    ],
+)
+
+staking_clf = StackingClassifier(
+    estimators=[
+        ('rf', c_rf),
+        ('gb', c_gb)
+    ],
+    final_estimator = LogisticRegression()
+)
+
+model_to_train = {
+    'Random Forest': c_rf,
+    'Gradient Boosting': c_gb,
+    'Voting Classifier': voting_clf,
+    'Stacking Classifier': staking_clf
+}
+
+result = []
+
+for name, model in model_to_train.items():
+    pipe = Pipeline(
+        [
+            ('preprocessor', preprocessor),
+            ('model', model)
+        ]
+    )
+    pipe.fit(X_train, y_train)
+    y_pred = pipe.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    result.append([name, accuracy])
+
+result_df = pd.DataFrame(result, columns=['Model', 'Accuracy']).sort_values(by='Accuracy', ascending=False)
+
+best_model = result_df.iloc[0]['Model']
+best_model_obj = model_to_train[best_model]
+
+
+final_pipe = Pipeline(
+    [
+        ('preprocessor', preprocessor),
+        ('model', best_model_obj)
+    ]
+)
+
+final_pipe.fit(X_train, y_train)
+final_y_pred = final_pipe.predict(X_test)
+
+v_pipeline = Pipeline(
+    [
+        ('preprocessor', preprocessor),
+        ('model', best_model_obj)
+    ]
+)
+
+
+cv_scores = cross_val_score(
+    v_pipeline,
+    X_train,
+    y_train, 
+    cv=10,
+    scoring='accuracy'
+    )
+
+print("Cross-validation scores: ", cv_scores)
+print("Mean accuracy: ", cv_scores.mean())
+print("Standard deviation of accuracy:", cv_scores.std())
+
+rf_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', c_rf)
+])
+
+para_dist = {
+    'model__n_estimators': randint(50, 100),
+    'model__max_depth': randint(5, 26),
+    'model__min_samples_split': randint(2, 10)
+}
+
+grid_search = RandomizedSearchCV(
+    estimator=rf_pipeline,
+    param_distributions=para_dist,
+    n_iter=50,
+    cv=5,
+    scoring='accuracy',
+    n_jobs= -1,
+    random_state=42
+)
+
+grid_search.fit(X_train, y_train)
+
+y_evaluation = grid_search.predict(X_test)
+
+print(classification_report(y_test, y_evaluation))
+
+
+
+with open ("Diabetes_pre.pkl", "wb") as f:
+    pickle.dump(grid_search, f)
